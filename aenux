@@ -1,0 +1,1939 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════
+#  AENUX v1.0.0 - The Ultimate Linux Multi-Tool
+#  Universal · Interactive · Automated · Lightweight
+#
+#  Author:  SimplyAe (shane.perso@gmail.com)
+#  License: MIT
+#  Repo:    https://github.com/SimplyAe/aenux
+# ═══════════════════════════════════════════════════════════════════════
+
+VERSION="1.0.0"
+SCRIPT_PATH="$(realpath "$0")"
+SCRIPT="aenux"
+CONFIG_DIR="$HOME/.config/aenux"
+CONFIG_FILE="$CONFIG_DIR/config.conf"
+HISTORY_FILE="$CONFIG_DIR/history.log"
+LOGFILE="$CONFIG_DIR/aenux.log"
+BACKUP_DIR="$HOME/.aenux-backups"
+AENUX_REMOTE="https://raw.githubusercontent.com/aenux/aenux/main/aenux"
+
+# ───────────────────────────────────────────────────────────────────────
+# COLORS & SYMBOLS
+# ───────────────────────────────────────────────────────────────────────
+R='\033[0;31m';  G='\033[0;32m';  Y='\033[1;33m';  B='\033[0;34m'
+M='\033[0;35m';  C='\033[0;36m';  W='\033[1;37m';  GR='\033[0;90m'
+BOLD='\033[1m';  DIM='\033[2m';   NC='\033[0m'
+OK="${G}✓${NC}"; FAIL="${R}✗${NC}"; ARR="${C}›${NC}"
+WARN="${Y}⚠${NC}"; BULLET="${B}•${NC}"
+
+# ───────────────────────────────────────────────────────────────────────
+# CORE HELPERS
+# ───────────────────────────────────────────────────────────────────────
+trap 'tput cnorm 2>/dev/null; echo ""' EXIT INT TERM
+
+log()       { mkdir -p "$CONFIG_DIR"; echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$1] ${*:2}" >> "$LOGFILE" 2>/dev/null; }
+hist()      { mkdir -p "$CONFIG_DIR"; echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$HISTORY_FILE" 2>/dev/null; }
+ok()        { echo -e "  ${OK}  ${G}${*}${NC}"; log INFO "$*"; }
+fail()      { echo -e "  ${FAIL}  ${R}${*}${NC}"; log ERROR "$*"; }
+info()      { echo -e "  ${ARR}  ${C}${*}${NC}"; }
+warn()      { echo -e "  ${WARN}  ${Y}${*}${NC}"; log WARN "$*"; }
+die()       { fail "$*"; exit 1; }
+pause()     { echo; read -rp "$(echo -e "  ${DIM}Press Enter to continue...${NC}")"; }
+confirm()   { read -rp "$(echo -e "  ${Y}$* [y/N]: ${NC}")" _r; [[ "${_r,,}" == "y" ]]; }
+need_root() { [[ $EUID -ne 0 ]] && die "Root required. Run: sudo $SCRIPT"; }
+
+prompt_choice() {
+    echo -ne "\n  ${C}${BOLD}AENUX ${GR}›${NC} ${W}"
+    read -r CHOICE
+    echo -ne "${NC}"
+}
+
+prompt_input() {
+    echo -ne "  ${Y}$1:${NC} ${W}"
+    read -r INPUT
+    echo -ne "${NC}"
+}
+
+spinner() {
+    local pid=$1 msg="${2:-Working...}" sp='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' i=0
+    tput civis 2>/dev/null
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r  ${C}${sp:$((i % ${#sp})):1}${NC}  ${DIM}%s${NC}   " "$msg"
+        sleep 0.08; ((i++))
+    done
+    printf "\r%60s\r" ""; tput cnorm 2>/dev/null
+}
+
+run_spin() {
+    local msg="$1"; shift
+    "$@" &>/tmp/aenux_out.log &
+    local pid=$!
+    spinner "$pid" "$msg"
+    wait "$pid"; local rc=$?
+    [[ $rc -ne 0 ]] && { fail "Task failed. Log: /tmp/aenux_out.log"; return $rc; }
+    return 0
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# CONFIG & INIT
+# ───────────────────────────────────────────────────────────────────────
+DEFAULT_EDITOR="nano"
+DEFAULT_SHELL="/bin/bash"
+DEFAULT_THEME="default"
+BACKUP_BEFORE_UPGRADE="true"
+AUTO_CLEAN="true"
+SHOW_TIPS="true"
+BACKUP_LOCATION="$HOME/.aenux-backups"
+DRY_RUN="false"
+
+init() {
+    mkdir -p "$CONFIG_DIR" "$BACKUP_DIR"
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        write_default_config
+        first_run_wizard
+    else
+        source "$CONFIG_FILE" 2>/dev/null || true
+    fi
+    BACKUP_DIR="${BACKUP_LOCATION:-$HOME/.aenux-backups}"
+    mkdir -p "$BACKUP_DIR"
+}
+
+write_default_config() {
+    cat > "$CONFIG_FILE" << EOF
+# AENUX Configuration - edit via Settings menu or directly
+BACKUP_BEFORE_UPGRADE=true
+AUTO_CLEAN=true
+SHOW_TIPS=true
+DRY_RUN=false
+DEFAULT_EDITOR=nano
+DEFAULT_SHELL=/bin/bash
+DEFAULT_THEME=default
+BACKUP_LOCATION=$HOME/.aenux-backups
+EOF
+}
+
+reload_config() { source "$CONFIG_FILE" 2>/dev/null || true; }
+
+# ───────────────────────────────────────────────────────────────────────
+# FIRST-RUN WIZARD
+# ───────────────────────────────────────────────────────────────────────
+first_run_wizard() {
+    clear
+    echo -e "${C}${BOLD}"
+    echo "  ╔══════════════════════════════════════════════════════╗"
+    echo "  ║         Welcome to AENUX v${VERSION}                      ║"
+    echo "  ║         First-time setup wizard                      ║"
+    echo "  ╚══════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+    echo -e "  Let's configure AENUX for your system.\n"
+
+    # Editor
+    echo -e "  ${BOLD}Preferred text editor:${NC}"
+    echo -e "  ${GR}1) code (VS Code)  2) nano  3) vim  4) nvim  5) vi  6) micro  7) other${NC}"
+    prompt_choice
+    case "$CHOICE" in
+        1) DEFAULT_EDITOR="code" ;;
+        2) DEFAULT_EDITOR="nano" ;;
+        3) DEFAULT_EDITOR="vim" ;;
+        4) DEFAULT_EDITOR="nvim" ;;
+        5) DEFAULT_EDITOR="vi" ;;
+        6) DEFAULT_EDITOR="micro" ;;
+        7) prompt_input "Enter editor name"; DEFAULT_EDITOR="$INPUT" ;;
+        *) DEFAULT_EDITOR="nano" ;;
+    esac
+
+    # Theme
+    echo -e "\n  ${BOLD}Color theme:${NC}"
+    echo -e "  ${GR}1) Default (cyan)  2) Green  3) Magenta  4) No color${NC}"
+    prompt_choice
+    case "$CHOICE" in
+        1) DEFAULT_THEME="default" ;;
+        2) DEFAULT_THEME="green" ;;
+        3) DEFAULT_THEME="magenta" ;;
+        4) DEFAULT_THEME="none" ;;
+        *) DEFAULT_THEME="default" ;;
+    esac
+
+    # Auto-clean
+    echo -e "\n  ${BOLD}Auto-clean after upgrades?${NC} ${GR}[y/n]${NC}"
+    read -rp "  › " _r
+    [[ "${_r,,}" == "n" ]] && AUTO_CLEAN="false" || AUTO_CLEAN="true"
+
+    # Backup location
+    echo -e "\n  ${BOLD}Backup directory:${NC} ${GR}(default: $HOME/.aenux-backups)${NC}"
+    prompt_input "Enter path or press Enter for default"
+    [[ -n "$INPUT" ]] && BACKUP_LOCATION="$INPUT" || BACKUP_LOCATION="$HOME/.aenux-backups"
+
+    # Write config
+    cat > "$CONFIG_FILE" << EOF
+# AENUX Configuration
+BACKUP_BEFORE_UPGRADE=true
+AUTO_CLEAN=${AUTO_CLEAN}
+SHOW_TIPS=true
+DRY_RUN=false
+DEFAULT_EDITOR=${DEFAULT_EDITOR}
+DEFAULT_SHELL=/bin/bash
+DEFAULT_THEME=${DEFAULT_THEME}
+BACKUP_LOCATION=${BACKUP_LOCATION}
+EOF
+
+    source "$CONFIG_FILE" 2>/dev/null || true
+    mkdir -p "$BACKUP_LOCATION"
+    
+    # Verify editor exists
+    if ! command -v "$DEFAULT_EDITOR" &>/dev/null; then
+        warn "Editor '$DEFAULT_EDITOR' not found on your system."
+        confirm "Install it now via package manager?" && {
+            need_root
+            run_spin "Installing $DEFAULT_EDITOR..." pm_run install "$DEFAULT_EDITOR" || \
+                warn "Install failed. You can change the editor later in Settings."
+        }
+    fi
+    
+    ok "AENUX configured! Settings saved to $CONFIG_FILE"
+    log INFO "First-run wizard completed"
+    hist "First-run setup wizard completed"
+    pause
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# THEME ENGINE
+# ───────────────────────────────────────────────────────────────────────
+apply_theme() {
+    case "${DEFAULT_THEME:-default}" in
+        green)    ACCENT="${G}";  ACCENT2="${C}" ;;
+        magenta)  ACCENT="${M}";  ACCENT2="${Y}" ;;
+        none)     ACCENT="";      ACCENT2=""; C=""; G=""; Y=""; B=""; M=""; R=""; W=""; GR=""; DIM=""; BOLD=""; NC="" ;;
+        *)        ACCENT="${C}";  ACCENT2="${M}" ;;
+    esac
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# BANNER
+# ───────────────────────────────────────────────────────────────────────
+banner() {
+    clear
+    apply_theme
+    echo -e "${C}${BOLD}"
+    echo "  ░█████╗░███████╗███╗░░██╗██╗░░░██╗██╗░░██╗"
+    echo "  ██╔══██╗██╔════╝████╗░██║██║░░░██║╚██╗██╔╝"
+    echo "  ███████║█████╗░░██╔██╗██║██║░░░██║░╚███╔╝░"
+    echo "  ██╔══██║██╔══╝░░██║╚████║██║░░░██║░██╔██╗░"
+    echo "  ██║░░██║███████╗██║░╚███║╚██████╔╝██╔╝╚██╗"
+    echo "  ╚═╝░░╚═╝╚══════╝╚═╝░░╚══╝░╚═════╝░╚═╝░░╚═╝"
+    echo -e "${NC}"
+    local distro host_name kern pm
+    distro=$(get_distro_name)
+    host_name=$(hostname 2>/dev/null || echo "unknown")
+    kern=$(uname -r 2>/dev/null | cut -d'-' -f1)
+    pm=$(detect_pm)
+    local dry_tag=""
+    [[ "$DRY_RUN" == "true" ]] && dry_tag=" ${Y}[DRY-RUN]${NC}"
+    echo -e "  ${GR}v${VERSION}${NC}${dry_tag}  ${DIM}│${NC}  ${DIM}Host:${NC} ${W}${host_name}${NC}  ${DIM}│${NC}  ${DIM}Distro:${NC} ${W}${distro}${NC}  ${DIM}│${NC}  ${DIM}Kernel:${NC} ${W}${kern}${NC}  ${DIM}│${NC}  ${DIM}PM:${NC} ${W}${pm}${NC}"
+    echo -e "  ${GR}────────────────────────────────────────────────────────────${NC}\n"
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU DRAWING
+# ───────────────────────────────────────────────────────────────────────
+draw_menu() {
+    local title="$1"; shift
+    echo -e "  ${C}${BOLD}┌─── ${title}${NC}"
+    for opt in "$@"; do
+        echo -e "  ${C}│${NC}  $opt"
+    done
+    echo -e "  ${C}└──────────────────────────────────────────${NC}\n"
+}
+
+section() {
+    echo -e "\n  ${C}${BOLD}── $* ──${NC}\n"
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# DISTRO & PACKAGE MANAGER DETECTION
+# ───────────────────────────────────────────────────────────────────────
+get_distro_name() {
+    if [[ -f /etc/os-release ]]; then
+        source /etc/os-release 2>/dev/null
+        echo "${PRETTY_NAME:-${NAME:-Unknown}}"
+    elif [[ -f /etc/issue ]]; then
+        head -1 /etc/issue | tr -d '\n\l'
+    else
+        uname -s
+    fi
+}
+
+detect_pm() {
+    for pm in apt-get dnf yum zypper pacman apk xbps-install nix-env emerge slackpkg swupd urpmi; do
+        command -v "$pm" &>/dev/null && echo "$pm" && return
+    done
+    echo "unknown"
+}
+
+detect_secondary_pms() {
+    local found=()
+    for pm in snap flatpak brew pip3 npm cargo gem; do
+        command -v "$pm" &>/dev/null && found+=("$pm")
+    done
+    echo "${found[*]}"
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# PACKAGE MANAGER ABSTRACTION
+# ───────────────────────────────────────────────────────────────────────
+pm_run() {
+    local action=$1; shift
+    local pm; pm=$(detect_pm)
+
+    # Dry-run intercept for destructive actions
+    if [[ "$DRY_RUN" == "true" ]] && [[ "$action" =~ ^(upgrade|install|remove|fix|clean)$ ]]; then
+        warn "[DRY-RUN] Would run: $pm $action $*"
+        log INFO "[DRY-RUN] $pm $action $*"
+        return 0
+    fi
+
+    case "$pm" in
+        apt-get)
+            case "$action" in
+                update)   apt-get update -qq ;;
+                upgrade)  DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && apt-get dist-upgrade -y ;;
+                install)  DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" ;;
+                remove)   apt-get remove -y "$@" && apt-get autoremove -y ;;
+                search)   apt-cache search "$@" ;;
+                list)     dpkg -l | awk '/^ii/{print $2}' ;;
+                clean)    apt-get autoremove -y && apt-get autoclean && apt-get clean ;;
+                fix)      dpkg --configure -a && apt-get install -f -y ;;
+                info)     apt-cache show "$@" 2>/dev/null ;;
+                check)    apt list --upgradable 2>/dev/null | grep -c upgradable || echo 0 ;;
+                owns)     dpkg -S "$@" 2>/dev/null ;;
+                recent)   grep "install " /var/log/dpkg.log 2>/dev/null | tail -20 ;;
+                hold)     apt-mark hold "$@" ;;
+                unhold)   apt-mark unhold "$@" ;;
+                held)     apt-mark showhold ;;
+                dryupgrade) apt-get upgrade --dry-run ;;
+            esac ;;
+        dnf)
+            case "$action" in
+                update)   dnf check-update -q || true ;;
+                upgrade)  dnf upgrade -y ;;
+                install)  dnf install -y "$@" ;;
+                remove)   dnf remove -y "$@" && dnf autoremove -y ;;
+                search)   dnf search "$@" ;;
+                list)     dnf list installed 2>/dev/null | awk 'NR>1{print $1}' ;;
+                clean)    dnf autoremove -y && dnf clean all ;;
+                fix)      dnf distro-sync -y ;;
+                info)     dnf info "$@" 2>/dev/null ;;
+                check)    dnf list updates 2>/dev/null | grep -c "^[[:alnum:]]" || echo 0 ;;
+                owns)     dnf provides "$@" 2>/dev/null ;;
+                recent)   dnf history list 2>/dev/null | head -20 ;;
+                hold)     dnf versionlock add "$@" 2>/dev/null || warn "Install dnf-plugin-core for versionlock" ;;
+                unhold)   dnf versionlock delete "$@" 2>/dev/null ;;
+                held)     dnf versionlock list 2>/dev/null ;;
+                dryupgrade) dnf upgrade --dry-run ;;
+            esac ;;
+        yum)
+            case "$action" in
+                update)   yum check-update -q || true ;;
+                upgrade)  yum update -y ;;
+                install)  yum install -y "$@" ;;
+                remove)   yum remove -y "$@" ;;
+                search)   yum search "$@" ;;
+                list)     rpm -qa --qf '%{NAME}\n' ;;
+                clean)    yum clean all ;;
+                fix)      yum distro-sync -y 2>/dev/null || yum update -y ;;
+                info)     yum info "$@" 2>/dev/null ;;
+                check)    yum list updates 2>/dev/null | grep -c "^[[:alnum:]]" || echo 0 ;;
+                owns)     yum provides "$@" 2>/dev/null ;;
+                recent)   yum history list 2>/dev/null | head -20 ;;
+                hold)     yum versionlock add "$@" ;;
+                unhold)   yum versionlock delete "$@" ;;
+                held)     yum versionlock list ;;
+                dryupgrade) yum update --assumeno ;;
+            esac ;;
+        zypper)
+            case "$action" in
+                update)   zypper refresh -q ;;
+                upgrade)  zypper update -y ;;
+                install)  zypper install -y "$@" ;;
+                remove)   zypper remove -y "$@" ;;
+                search)   zypper search "$@" ;;
+                list)     zypper search --installed-only 2>/dev/null | awk 'NR>4{print $3}' ;;
+                clean)    zypper clean --all ;;
+                fix)      zypper verify -y ;;
+                info)     zypper info "$@" 2>/dev/null ;;
+                check)    zypper list-updates 2>/dev/null | grep -c "^v" || echo 0 ;;
+                owns)     zypper search --provides "$@" ;;
+                recent)   zypper history 2>/dev/null | head -20 ;;
+                hold)     zypper addlock "$@" ;;
+                unhold)   zypper removelock "$@" ;;
+                held)     zypper locks ;;
+                dryupgrade) zypper update --dry-run ;;
+            esac ;;
+        pacman)
+            case "$action" in
+                # Write operations — require sudo
+                update)   sudo pacman -Sy --noconfirm -q ;;
+                upgrade)  sudo pacman -Syu --noconfirm ;;
+                install)  sudo pacman -S --noconfirm "$@" ;;
+                remove)   sudo pacman -Rns --noconfirm "$@" ;;
+                clean)    sudo pacman -Sc --noconfirm ;;
+                fix)      sudo pacman -Syy --noconfirm ;;
+                # Read-only — no sudo needed
+                search)   pacman -Ss "$@" ;;
+                list)     pacman -Qq ;;
+                info)     pacman -Si "$@" 2>/dev/null ;;
+                check)    pacman -Qu 2>/dev/null | wc -l || echo 0 ;;
+                owns)     pacman -Qo "$@" 2>/dev/null ;;
+                recent)   grep -E "installed|upgraded" /var/log/pacman.log 2>/dev/null | tail -20 ;;
+                hold)     warn "Add to /etc/pacman.conf under IgnorePkg = <package>" ;;
+                unhold)   warn "Remove from IgnorePkg in /etc/pacman.conf" ;;
+                held)     grep "^IgnorePkg" /etc/pacman.conf 2>/dev/null || echo "  (none set)" ;;
+                dryupgrade) pacman -Syu --print-format "  %n %v" --noconfirm 2>/dev/null ;;
+            esac ;;
+        apk)
+            case "$action" in
+                update)   apk update -q ;;
+                upgrade)  apk upgrade ;;
+                install)  apk add "$@" ;;
+                remove)   apk del "$@" ;;
+                search)   apk search "$@" ;;
+                list)     apk list --installed 2>/dev/null | awk '{print $1}' ;;
+                clean)    apk cache clean ;;
+                fix)      apk fix ;;
+                info)     apk info "$@" 2>/dev/null ;;
+                check)    apk version 2>/dev/null | grep -c "<" || echo 0 ;;
+                owns)     apk info --who-owns "$@" ;;
+                recent)   apk log 2>/dev/null | tail -20 ;;
+                hold)     apk add "$@=" ;;
+                unhold)   warn "Remove version pin manually from /etc/apk/world" ;;
+                held)     grep "=" /etc/apk/world 2>/dev/null ;;
+                dryupgrade) apk upgrade --simulate ;;
+            esac ;;
+        xbps-install)
+            case "$action" in
+                update)   xbps-install -S -y 2>/dev/null || true ;;
+                upgrade)  xbps-install -Su -y ;;
+                install)  xbps-install -S "$@" ;;
+                remove)   xbps-remove -R "$@" ;;
+                search)   xbps-query -Rs "$@" ;;
+                list)     xbps-query -l | awk '{print $2}' ;;
+                clean)    xbps-remove -Oo -y ;;
+                fix)      xbps-pkgdb -a ;;
+                info)     xbps-query -RS "$@" ;;
+                check)    xbps-install -Sun 2>/dev/null | wc -l || echo 0 ;;
+                owns)     xbps-query -o "$@" ;;
+                recent)   xbps-query -l | tail -20 ;;
+                hold)     xbps-pkgdb -m hold "$@" ;;
+                unhold)   xbps-pkgdb -m unhold "$@" ;;
+                held)     xbps-query -l | grep hold ;;
+                dryupgrade) xbps-install -Sun ;;
+            esac ;;
+        nix-env)
+            case "$action" in
+                update)   nix-channel --update ;;
+                upgrade)  nix-env -u '*' ;;
+                install)  nix-env -iA nixpkgs."$@" ;;
+                remove)   nix-env -e "$@" ;;
+                search)   nix-env -qaP "$@" ;;
+                list)     nix-env -q ;;
+                clean)    nix-collect-garbage -d ;;
+                fix)      nix-store --verify --check-contents ;;
+                info)     nix-env -qaP --description "$@" ;;
+                check)    nix-env -qu 2>/dev/null | wc -l || echo 0 ;;
+                owns)     nix-store -q --references "$@" ;;
+                recent)   nix-env --list-generations | tail -10 ;;
+                dryupgrade) nix-env -u '*' --dry-run ;;
+            esac ;;
+        emerge)
+            case "$action" in
+                update)   emerge --sync -q ;;
+                upgrade)  emerge -uDU --keep-going @world ;;
+                install)  emerge "$@" ;;
+                remove)   emerge --depclean "$@" ;;
+                search)   emerge --search "$@" ;;
+                list)     qlist -Iv 2>/dev/null || equery list '*' ;;
+                clean)    emerge --depclean -q ;;
+                fix)      revdep-rebuild ;;
+                info)     emerge -s "$@" ;;
+                check)    emerge -puDU @world 2>/dev/null | grep -c "^\\[ebuild" || echo 0 ;;
+                owns)     equery belongs "$@" ;;
+                dryupgrade) emerge -pDUu @world ;;
+            esac ;;
+        slackpkg)
+            case "$action" in
+                update)   slackpkg update ;;
+                upgrade)  slackpkg upgrade-all ;;
+                install)  slackpkg install "$@" ;;
+                remove)   slackpkg remove "$@" ;;
+                search)   slackpkg search "$@" ;;
+                list)     ls /var/log/packages/ ;;
+                clean)    slackpkg clean-system ;;
+                info)     slackpkg info "$@" ;;
+                check)    slackpkg upgrade-all 2>/dev/null | grep -c "^Upgrading" || echo 0 ;;
+            esac ;;
+        swupd)
+            case "$action" in
+                update)   swupd update --dry-run ;;
+                upgrade)  swupd update ;;
+                install)  swupd bundle-add "$@" ;;
+                remove)   swupd bundle-remove "$@" ;;
+                search)   swupd search "$@" ;;
+                list)     swupd bundle-list ;;
+                clean)    swupd clean --all ;;
+                fix)      swupd repair ;;
+                info)     swupd bundle-info "$@" ;;
+                check)    swupd update --dry-run 2>/dev/null | grep -c "^Update" || echo 0 ;;
+            esac ;;
+        *) die "No supported package manager found." ;;
+    esac
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU: PACKAGES (native)
+# ───────────────────────────────────────────────────────────────────────
+menu_packages() {
+    while true; do
+        banner
+        draw_menu "📦  Package Manager" \
+            "${G}1)${NC}  Install package(s)" \
+            "${R}2)${NC}  Remove package(s)" \
+            "${Y}3)${NC}  Update package lists" \
+            "${C}4)${NC}  Upgrade all packages" \
+            "${B}5)${NC}  Search for a package" \
+            "${W}6)${NC}  Package info / details" \
+            "${M}7)${NC}  List installed packages" \
+            "${R}8)${NC}  Fix broken packages" \
+            "${Y}9)${NC}  What provides a file/command?" \
+            "${C}a)${NC}  Recently installed packages" \
+            "${B}b)${NC}  Hold / pin a package version" \
+            "${M}c)${NC}  Unhold a package" \
+            "${W}d)${NC}  Show held/pinned packages" \
+            "${G}e)${NC}  Dry-run: preview upgrades" \
+            "${GR}0)${NC}  Back"
+        prompt_choice
+
+        case "$CHOICE" in
+            1) need_root
+               prompt_input "Package name(s)"
+               run_spin "Installing ${INPUT}..." pm_run install $INPUT
+               ok "Done."; hist "install: $INPUT" ;;
+            2) need_root
+               prompt_input "Package name(s) to remove"
+               confirm "Remove '$INPUT'?" || { pause; continue; }
+               run_spin "Removing ${INPUT}..." pm_run remove $INPUT
+               ok "Removed."; hist "remove: $INPUT" ;;
+            3) need_root
+               run_spin "Updating package lists..." pm_run update
+               ok "Package lists updated."; hist "update" ;;
+            4) need_root
+               [[ "$BACKUP_BEFORE_UPGRADE" == "true" ]] && backup_state
+               run_spin "Upgrading all packages..." pm_run upgrade
+               [[ "$AUTO_CLEAN" == "true" ]] && run_spin "Cleaning..." pm_run clean
+               ok "System upgraded."; hist "upgrade" ;;
+            5) prompt_input "Search query"
+               echo ""; pm_run search "$INPUT" 2>/dev/null | head -50 ;;
+            6) prompt_input "Package name"
+               echo ""; pm_run info "$INPUT" 2>/dev/null ;;
+            7) info "Installed packages (sorted):"; echo ""
+               pm_run list 2>/dev/null | sort | column ;;
+            8) need_root
+               run_spin "Fixing broken packages..." pm_run fix
+               ok "Done."; hist "fix-broken" ;;
+            9) prompt_input "File or command (e.g. /usr/bin/python3)"
+               echo ""; pm_run owns "$INPUT" 2>/dev/null ;;
+            a) echo ""; pm_run recent 2>/dev/null ;;
+            b) need_root
+               prompt_input "Package to hold/pin"
+               pm_run hold "$INPUT"
+               ok "Package '$INPUT' held."; hist "hold: $INPUT" ;;
+            c) need_root
+               prompt_input "Package to unhold"
+               pm_run unhold "$INPUT"
+               ok "Unheld."; hist "unhold: $INPUT" ;;
+            d) echo ""; pm_run held 2>/dev/null ;;
+            e) echo ""
+               info "Dry-run upgrade preview:"; echo ""
+               pm_run dryupgrade 2>/dev/null ;;
+            0) return ;;
+            *) warn "Invalid choice." ;;
+        esac
+        pause
+    done
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU: SNAP & FLATPAK
+# ───────────────────────────────────────────────────────────────────────
+menu_universal_pm() {
+    while true; do
+        banner
+        draw_menu "🌍  Universal Package Managers" \
+            "${C}1)${NC}  Snap: install" \
+            "${R}2)${NC}  Snap: remove" \
+            "${Y}3)${NC}  Snap: list installed" \
+            "${G}4)${NC}  Snap: update all" \
+            "${B}5)${NC}  Snap: find / search" \
+            "${C}──)" \
+            "${M}6)${NC}  Flatpak: install" \
+            "${R}7)${NC}  Flatpak: remove" \
+            "${Y}8)${NC}  Flatpak: list installed" \
+            "${G}9)${NC}  Flatpak: update all" \
+            "${B}a)${NC}  Flatpak: search" \
+            "${W}b)${NC}  Flatpak: add Flathub remote" \
+            "${GR}0)${NC}  Back"
+        prompt_choice
+
+        case "$CHOICE" in
+            1) need_root
+               if ! command -v snap &>/dev/null; then warn "snap not installed."; pause; continue; fi
+               prompt_input "Snap package name"
+               run_spin "Installing snap: $INPUT..." snap install "$INPUT"
+               ok "Installed."; hist "snap install: $INPUT" ;;
+            2) need_root
+               prompt_input "Snap to remove"
+               snap remove "$INPUT" && ok "Removed." || fail "Failed."
+               hist "snap remove: $INPUT" ;;
+            3) echo ""; snap list 2>/dev/null || warn "snap not installed." ;;
+            4) need_root
+               run_spin "Updating snaps..." snap refresh
+               ok "Snaps updated."; hist "snap refresh" ;;
+            5) prompt_input "Search term"
+               echo ""; snap find "$INPUT" 2>/dev/null | head -30 ;;
+            6) need_root
+               if ! command -v flatpak &>/dev/null; then warn "flatpak not installed."; pause; continue; fi
+               prompt_input "Flatpak app ID (e.g. org.libreoffice.LibreOffice)"
+               run_spin "Installing flatpak: $INPUT..." flatpak install -y "$INPUT"
+               ok "Installed."; hist "flatpak install: $INPUT" ;;
+            7) need_root
+               prompt_input "Flatpak app ID to remove"
+               flatpak uninstall -y "$INPUT" && ok "Removed." || fail "Failed."
+               hist "flatpak remove: $INPUT" ;;
+            8) echo ""; flatpak list 2>/dev/null || warn "flatpak not installed." ;;
+            9) need_root
+               run_spin "Updating flatpaks..." flatpak update -y
+               ok "Flatpaks updated."; hist "flatpak update" ;;
+            a) prompt_input "Search term"
+               echo ""; flatpak search "$INPUT" 2>/dev/null | head -30 ;;
+            b) need_root
+               flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo \
+                   && ok "Flathub remote added." || fail "Failed." ;;
+            0) return ;;
+            *) warn "Invalid choice." ;;
+        esac
+        pause
+    done
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU: SYSTEM MAINTENANCE
+# ───────────────────────────────────────────────────────────────────────
+menu_maintenance() {
+    while true; do
+        banner
+        draw_menu "🔧  System Maintenance" \
+            "${G}1)${NC}  Deep clean (cache, logs, temp)" \
+            "${Y}2)${NC}  Auto-upgrade (smart, with checks)" \
+            "${C}3)${NC}  Optimize system performance" \
+            "${B}4)${NC}  Repair filesystem (schedule fsck)" \
+            "${M}5)${NC}  Rebuild initramfs / initrd" \
+            "${W}6)${NC}  Clear systemd journal logs" \
+            "${R}7)${NC}  Purge old kernels" \
+            "${G}8)${NC}  Schedule auto-upgrade (cron/timer)" \
+            "${C}9)${NC}  Schedule auto-clean (cron/timer)" \
+            "${Y}a)${NC}  Preview upgrade (dry-run)" \
+            "${GR}0)${NC}  Back"
+        prompt_choice
+
+        case "$CHOICE" in
+            1) need_root; do_deep_clean ;;
+            2) need_root; do_auto_upgrade ;;
+            3) need_root; do_optimize ;;
+            4) need_root; do_fsck ;;
+            5) need_root; do_initramfs ;;
+            6) need_root; do_journal_clean ;;
+            7) need_root; do_purge_kernels ;;
+            8) need_root; schedule_task "upgrade" ;;
+            9) need_root; schedule_task "clean" ;;
+            a) echo ""; info "Dry-run upgrade preview:"; echo ""
+               pm_run dryupgrade 2>/dev/null ;;
+            0) return ;;
+            *) warn "Invalid choice." ;;
+        esac
+        pause
+    done
+}
+
+do_deep_clean() {
+    info "Deep cleaning system..."
+    run_spin "Cleaning package cache..." pm_run clean
+    if command -v journalctl &>/dev/null; then
+        run_spin "Trimming journal (3 days)..." journalctl --vacuum-time=3d
+    fi
+    run_spin "Clearing /tmp and /var/tmp..." bash -c 'rm -rf /tmp/* /var/tmp/* 2>/dev/null; true'
+    run_spin "Removing old log archives..." bash -c 'find /var/log -type f \( -name "*.gz" -o -name "*.log.*" \) -mtime +14 -delete 2>/dev/null; true'
+    run_spin "Clearing thumbnail cache..." bash -c 'rm -rf ~/.cache/thumbnails/* 2>/dev/null; true'
+    local avail; avail=$(df -h / | awk 'NR==2{print $4}')
+    ok "Deep clean complete. Free space on /: ${avail}"    hist "deep-clean"
+    log INFO "Deep clean completed"
+}
+
+do_auto_upgrade() {
+    info "Smart auto-upgrade starting..."
+    local avail_kb; avail_kb=$(df / | awk 'NR==2{print $4}')
+    if [[ $avail_kb -lt 524288 ]]; then
+        warn "Low disk space (<512MB detected). Running clean first..."
+        do_deep_clean
+    fi
+    local count; count=$(pm_run check 2>/dev/null | tr -d '[:space:]' || echo 0)
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    if [[ "$count" -eq 0 ]]; then
+        ok "System is already up to date."
+        return
+    fi
+    info "$count package(s) to upgrade."
+    [[ "$BACKUP_BEFORE_UPGRADE" == "true" ]] && backup_state
+    run_spin "Upgrading system..." pm_run upgrade
+    [[ "$AUTO_CLEAN" == "true" ]] && run_spin "Cleaning up..." pm_run clean
+    ok "Auto-upgrade complete ($count packages)."
+    hist "auto-upgrade: $count packages"
+    log INFO "Auto-upgrade: $count packages"
+}
+
+do_optimize() {
+    info "Optimizing system performance..."
+    sync
+    echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+    sysctl -qw vm.swappiness=10 2>/dev/null || true
+    sysctl -qw vm.vfs_cache_pressure=50 2>/dev/null || true
+    if command -v fstrim &>/dev/null; then
+        run_spin "Trimming SSDs (fstrim)..." fstrim -av
+    fi
+    ok "System optimized."
+    local mem; mem=$(free -h | awk '/Mem/{print $7}')
+    info "Available memory now: $mem"
+    hist "optimize"
+}
+
+do_fsck() {
+    warn "fsck must run on unmounted filesystems."
+    info "Scheduling fsck check on next reboot for /..."
+    if touch /forcefsck 2>/dev/null; then
+        ok "Scheduled via /forcefsck."
+    else
+        info "Try: tune2fs -c 1 /dev/<device>  or  systemctl enable systemd-fsck-root"
+    fi
+}
+
+do_initramfs() {
+    if command -v update-initramfs &>/dev/null; then
+        run_spin "Rebuilding initramfs..." update-initramfs -u -k all
+    elif command -v mkinitcpio &>/dev/null; then
+        run_spin "Rebuilding (mkinitcpio)..." mkinitcpio -P
+    elif command -v dracut &>/dev/null; then
+        run_spin "Rebuilding (dracut)..." dracut --regenerate-all --force
+    else
+        warn "No initramfs tool found (tried: update-initramfs, mkinitcpio, dracut)."
+        return
+    fi
+    ok "Initramfs rebuilt."
+    hist "rebuild-initramfs"
+}
+
+do_journal_clean() {
+    prompt_input "Keep logs for how many days? (default: 3)"
+    local days="${INPUT:-3}"
+    run_spin "Vacuuming journal..." journalctl --vacuum-time="${days}d"
+    ok "Journal cleaned (kept last ${days} days)."
+    hist "journal-clean: ${days}d"
+}
+
+do_purge_kernels() {
+    local pm; pm=$(detect_pm)
+    case "$pm" in
+        apt-get)
+            info "Current kernel: $(uname -r)"
+            info "Installed linux-image packages:"
+            dpkg -l | grep linux-image | awk '{print "  " $2}'
+            echo ""
+            confirm "Remove old kernels (keeps running kernel)?" || return
+            run_spin "Removing old kernels..." bash -c \
+                'apt-get purge -y $(dpkg -l "linux-image-*" | awk "/^ii/{print \$2}" | grep -v "$(uname -r)" | grep -v "linux-image-generic") 2>/dev/null; apt-get autoremove -y'
+            ok "Old kernels purged."; hist "purge-kernels" ;;
+        dnf|yum)
+            run_spin "Removing old kernels..." dnf remove -y --oldinstallonly --setopt installonly_limit=2
+            ok "Old kernels removed."; hist "purge-kernels" ;;
+        pacman)
+            info "Installed kernels:"; pacman -Qq | grep "^linux" | head -20
+            warn "Remove manually: sudo pacman -Rns <kernel-package>" ;;
+        *) warn "Kernel purge not automated for your package manager." ;;
+    esac
+}
+
+schedule_task() {
+    local task="$1"
+    echo ""
+    info "Schedule auto-$task via:"
+    echo -e "  ${G}1)${NC}  cron"
+    echo -e "  ${B}2)${NC}  systemd timer"
+    echo -e "  ${GR}0)${NC}  Cancel"
+    prompt_choice
+    case "$CHOICE" in
+        1) schedule_cron "$task" ;;
+        2) schedule_systemd_timer "$task" ;;
+        0) return ;;
+    esac
+}
+
+schedule_cron() {
+    local task="$1"
+    echo ""
+    echo -e "  ${BOLD}When should it run?${NC}"
+    echo -e "  ${G}1)${NC} Daily at 03:00"
+    echo -e "  ${B}2)${NC} Weekly (Sunday 03:00)"
+    echo -e "  ${Y}3)${NC} Custom cron expression"
+    prompt_choice
+    local cron_expr
+    case "$CHOICE" in
+        1) cron_expr="0 3 * * *" ;;
+        2) cron_expr="0 3 * * 0" ;;
+        3) prompt_input "Cron expression (e.g. 0 3 * * *)"; cron_expr="$INPUT" ;;
+        *) warn "Cancelled."; return ;;
+    esac
+    local cmd="$SCRIPT_PATH $task"
+    (crontab -l 2>/dev/null; echo "$cron_expr root $cmd") | crontab -
+    ok "Cron job added: [$cron_expr] $cmd"
+    hist "schedule-cron: $task $cron_expr"
+}
+
+schedule_systemd_timer() {
+    local task="$1"
+    local unit_name="aenux-${task}"
+    echo ""
+    echo -e "  ${BOLD}Run every:${NC}"
+    echo -e "  ${G}1)${NC} Daily"
+    echo -e "  ${B}2)${NC} Weekly"
+    prompt_choice
+    local on_calendar
+    case "$CHOICE" in
+        1) on_calendar="daily" ;;
+        2) on_calendar="weekly" ;;
+        *) warn "Cancelled."; return ;;
+    esac
+
+    cat > "/etc/systemd/system/${unit_name}.service" << EOF
+[Unit]
+Description=AENUX auto-${task}
+
+[Service]
+Type=oneshot
+ExecStart=${SCRIPT_PATH} ${task}
+EOF
+
+    cat > "/etc/systemd/system/${unit_name}.timer" << EOF
+[Unit]
+Description=AENUX auto-${task} timer
+
+[Timer]
+OnCalendar=${on_calendar}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable --now "${unit_name}.timer"
+    ok "Systemd timer created and enabled: ${unit_name}.timer"
+    hist "schedule-systemd: $task $on_calendar"
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU: PROCESS MANAGER
+# ───────────────────────────────────────────────────────────────────────
+menu_processes() {
+    while true; do
+        banner
+        draw_menu "⚡  Process Manager" \
+            "${G}1)${NC}  Top 15 by CPU usage" \
+            "${C}2)${NC}  Top 15 by memory usage" \
+            "${Y}3)${NC}  Find process by name" \
+            "${R}4)${NC}  Kill process by name" \
+            "${B}5)${NC}  Kill process by PID" \
+            "${M}6)${NC}  Force kill (SIGKILL) by name" \
+            "${W}7)${NC}  Renice process (change priority)" \
+            "${G}8)${NC}  Show full process tree" \
+            "${C}9)${NC}  List zombie processes" \
+            "${GR}0)${NC}  Back"
+        prompt_choice
+
+        case "$CHOICE" in
+            1) echo ""
+               ps aux --sort=-%cpu | awk 'NR==1 || NR<=16 {printf "  %s\n", $0}' ;;
+            2) echo ""
+               ps aux --sort=-%mem | awk 'NR==1 || NR<=16 {printf "  %s\n", $0}' ;;
+            3) prompt_input "Process name to search"
+               echo ""; pgrep -la "$INPUT" 2>/dev/null || ps aux | grep -i "$INPUT" | grep -v grep ;;
+            4) prompt_input "Process name to kill (SIGTERM)"
+               confirm "Kill all processes matching '$INPUT'?" || { pause; continue; }
+               pkill "$INPUT" && ok "Sent SIGTERM to '$INPUT'." || fail "No matching process found." ;;
+            5) prompt_input "PID to kill"
+               confirm "Kill PID $INPUT?" || { pause; continue; }
+               kill "$INPUT" && ok "Sent SIGTERM to PID $INPUT." || fail "Failed." ;;
+            6) prompt_input "Process name to force kill (SIGKILL)"
+               confirm "Force kill '$INPUT'? This is immediate and unrecoverable." || { pause; continue; }
+               pkill -9 "$INPUT" && ok "Force killed '$INPUT'." || fail "No process found." ;;
+            7) prompt_input "PID to renice"
+               local pid="$INPUT"
+               prompt_input "New nice value (-20 = highest priority, 19 = lowest)"
+               renice -n "$INPUT" -p "$pid" && ok "Reniced PID $pid to $INPUT." || fail "Failed (may need root)." ;;
+            8) echo ""
+               if command -v pstree &>/dev/null; then pstree -p | head -60
+               else ps axjf | head -60; fi ;;
+            9) echo ""
+               ps aux | awk '$8=="Z" {print "  " $0}'
+               local count; count=$(ps aux | awk '$8=="Z"' | wc -l)
+               [[ $count -eq 0 ]] && ok "No zombie processes found." || warn "$count zombie(s) found." ;;
+            0) return ;;
+            *) warn "Invalid choice." ;;
+        esac
+        pause
+    done
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU: DISK & FILE TOOLS
+# ───────────────────────────────────────────────────────────────────────
+menu_disk() {
+    while true; do
+        banner
+        draw_menu "💿  Disk & File Tools" \
+            "${G}1)${NC}  Disk usage overview (all mounts)" \
+            "${C}2)${NC}  Top 20 largest files/dirs (find)" \
+            "${Y}3)${NC}  Find files larger than X MB" \
+            "${B}4)${NC}  List block devices (lsblk)" \
+            "${M}5)${NC}  Mount a drive" \
+            "${R}6)${NC}  Unmount a drive" \
+            "${W}7)${NC}  Format a drive (WARNING: destructive)" \
+            "${G}8)${NC}  Check disk health (smartctl)" \
+            "${C}9)${NC}  Show inode usage" \
+            "${GR}0)${NC}  Back"
+        prompt_choice
+
+        case "$CHOICE" in
+            1) echo ""
+               df -h --output=target,fstype,size,used,avail,pcent 2>/dev/null | \
+                   grep -Ev "^(tmpfs|devtmpfs|squashfs|efivarfs|cgroupfs|sysfs|proc|devpts|hugetlbfs|mqueue|debugfs|tracefs|securityfs|fusectl|binfmt_misc|configfs|none)" | \
+                   awk 'NR==1{print "  "$0; next}
+                        $6+0 >= 90 {printf "  \033[0;31m%-40s\033[0m\n", $0; next}
+                        $6+0 >= 70 {printf "  \033[1;33m%-40s\033[0m\n", $0; next}
+                        {print "  "$0}' ;;
+            2) echo ""; info "Scanning for largest items in / (may take a moment)..."
+               du -ahx / 2>/dev/null | sort -rh | head -25 | awk '{print "  "$0}' ;;
+            3) prompt_input "Minimum size in MB (e.g. 100)"
+               echo ""; find / -xdev -type f -size +"${INPUT}M" 2>/dev/null | \
+                   xargs ls -lh 2>/dev/null | sort -k5 -rh | head -20 | awk '{print "  "$0}' ;;
+            4) echo ""; lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MOUNTPOINT ;;
+            5) echo ""
+               lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT | awk '{print "  "$0}'
+               echo ""; prompt_input "Device (e.g. /dev/sdb1)"
+               local dev="$INPUT"
+               prompt_input "Mount point (e.g. /mnt/usb)"
+               mkdir -p "$INPUT"
+               mount "$dev" "$INPUT" && ok "Mounted $dev at $INPUT." || fail "Mount failed." ;;
+            6) prompt_input "Mount point or device to unmount"
+               umount "$INPUT" && ok "Unmounted $INPUT." || fail "Unmount failed." ;;
+            7) echo ""
+               warn "THIS WILL PERMANENTLY ERASE ALL DATA ON THE SELECTED DEVICE."
+               echo ""; lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT | awk '{print "  "$0}'
+               echo ""; prompt_input "Device to format (e.g. /dev/sdb  — NOT /dev/sda!)"
+               local dev="$INPUT"
+               echo -e "  ${BOLD}Filesystem type:${NC}"
+               echo -e "  ${G}1)${NC} ext4  ${B}2)${NC} xfs  ${Y}3)${NC} fat32  ${M}4)${NC} btrfs  ${R}5)${NC} ntfs"
+               prompt_choice
+               local fs
+               case "$CHOICE" in
+                   1) fs="ext4" ;; 2) fs="xfs" ;; 3) fs="vfat" ;;
+                   4) fs="btrfs" ;; 5) fs="ntfs" ;; *) warn "Cancelled."; pause; continue ;;
+               esac
+               echo ""
+               warn "About to format $dev as $fs. ALL DATA WILL BE LOST."
+               confirm "Type y to confirm you understand this is irreversible" || { warn "Cancelled."; pause; continue; }
+               mkfs."$fs" "$dev" && ok "$dev formatted as $fs." || fail "Format failed."
+               hist "format: $dev as $fs" ;;
+            8) if ! command -v smartctl &>/dev/null; then
+                   warn "smartmontools not installed. Run: aenux install smartmontools"
+               else
+                   prompt_input "Device (e.g. /dev/sda)"
+                   echo ""; smartctl -a "$INPUT" | head -40
+               fi ;;
+            9) echo ""
+               df -i --output=target,iused,iavail,ipcent 2>/dev/null | awk '{print "  "$0}' ;;
+            0) return ;;
+            *) warn "Invalid choice." ;;
+        esac
+        pause
+    done
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU: SERVICES
+# ───────────────────────────────────────────────────────────────────────
+menu_services() {
+    while true; do
+        banner
+        draw_menu "⚙️   Service Manager" \
+            "${G}1)${NC}  Start a service" \
+            "${R}2)${NC}  Stop a service" \
+            "${Y}3)${NC}  Restart a service" \
+            "${C}4)${NC}  Enable at boot" \
+            "${B}5)${NC}  Disable at boot" \
+            "${W}6)${NC}  Check service status" \
+            "${M}7)${NC}  List all running services" \
+            "${R}8)${NC}  List failed services" \
+            "${G}9)${NC}  View service logs (journalctl)" \
+            "${GR}0)${NC}  Back"
+        prompt_choice
+
+        local svc
+        case "$CHOICE" in
+            1|2|3|4|5|6)
+                prompt_input "Service name"
+                svc="$INPUT"
+                case "$CHOICE" in
+                    1) need_root; svc_action start "$svc" ;;
+                    2) need_root; svc_action stop "$svc" ;;
+                    3) need_root; svc_action restart "$svc" ;;
+                    4) need_root; svc_action enable "$svc" ;;
+                    5) need_root; svc_action disable "$svc" ;;
+                    6) svc_action status "$svc" ;;
+                esac ;;
+            7) echo ""
+               if command -v systemctl &>/dev/null; then
+                   systemctl list-units --type=service --state=running --no-pager | head -40
+               else
+                   service --status-all 2>&1 | grep "+" | head -40
+               fi ;;
+            8) echo ""
+               if command -v systemctl &>/dev/null; then
+                   systemctl --failed --no-pager
+               else
+                   warn "Failed service listing requires systemd."
+               fi ;;
+            9) prompt_input "Service name for logs"
+               echo ""; journalctl -u "$INPUT" --no-pager -n 40 2>/dev/null || \
+                   warn "journalctl not available." ;;
+            0) return ;;
+            *) warn "Invalid choice." ;;
+        esac
+        pause
+    done
+}
+
+svc_action() {
+    local action=$1 svc=$2
+    if command -v systemctl &>/dev/null; then
+        systemctl "$action" "$svc" && ok "[$svc] $action" || fail "Failed to $action '$svc'"
+    elif command -v service &>/dev/null; then
+        service "$svc" "$action" && ok "[$svc] $action" || fail "Failed."
+    else
+        fail "No init system found."
+    fi
+    log INFO "Service $svc: $action"; hist "service: $svc $action"
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU: NETWORK
+# ───────────────────────────────────────────────────────────────────────
+menu_network() {
+    while true; do
+        banner
+        draw_menu "🌐  Network Tools" \
+            "${G}1)${NC}  Show IP addresses & interfaces" \
+            "${C}2)${NC}  Ping a host" \
+            "${B}3)${NC}  DNS lookup" \
+            "${Y}4)${NC}  Trace route" \
+            "${M}5)${NC}  Show open ports" \
+            "${W}6)${NC}  Show active connections" \
+            "${R}7)${NC}  Flush DNS cache" \
+            "${G}8)${NC}  Test internet speed" \
+            "${C}9)${NC}  Show routing table" \
+            "${B}a)${NC}  Download a file (wget/curl)" \
+            "${Y}b)${NC}  Show public IP address" \
+            "${GR}0)${NC}  Back"
+        prompt_choice
+
+        case "$CHOICE" in
+            1) echo ""
+               if command -v ip &>/dev/null; then ip -c addr show 2>/dev/null || ip addr show
+               else ifconfig 2>/dev/null || warn "Install net-tools or iproute2."; fi ;;
+            2) prompt_input "Host to ping"
+               echo ""; ping -c 4 "$INPUT" ;;
+            3) prompt_input "Domain to look up"
+               echo ""
+               if command -v dig &>/dev/null; then dig +short "$INPUT"
+               elif command -v nslookup &>/dev/null; then nslookup "$INPUT"
+               else host "$INPUT" 2>/dev/null || warn "No DNS tools found (dig/nslookup/host)."; fi ;;
+            4) prompt_input "Host to trace"
+               echo ""
+               if command -v traceroute &>/dev/null; then traceroute "$INPUT"
+               elif command -v tracepath &>/dev/null; then tracepath "$INPUT"
+               else warn "Install traceroute or tracepath."; fi ;;
+            5) echo ""
+               if command -v ss &>/dev/null; then ss -tulnp
+               elif command -v netstat &>/dev/null; then netstat -tulnp
+               else warn "Install iproute2 (ss) or net-tools (netstat)."; fi ;;
+            6) echo ""
+               if command -v ss &>/dev/null; then ss -tp
+               else netstat -tp 2>/dev/null; fi ;;
+            7) need_root
+               if command -v resolvectl &>/dev/null; then
+                   resolvectl flush-caches && ok "DNS cache flushed (resolvectl)."
+               elif command -v systemd-resolve &>/dev/null; then
+                   systemd-resolve --flush-caches && ok "DNS cache flushed."
+               elif command -v nscd &>/dev/null; then
+                   service nscd restart && ok "nscd restarted."
+               elif command -v dnsmasq &>/dev/null; then
+                   pkill -HUP dnsmasq && ok "dnsmasq cache cleared."
+               else warn "No known DNS cache service found."; fi ;;
+            8) if command -v speedtest-cli &>/dev/null; then speedtest-cli
+               elif command -v speedtest &>/dev/null; then speedtest
+               elif command -v curl &>/dev/null; then
+                   info "Falling back to curl-based speed test..."
+                   curl -s https://raw.githubusercontent.com/sivel/speedtest-cli/master/speedtest.py | python3
+               else warn "Install speedtest-cli: aenux install speedtest-cli"; fi ;;
+            9) echo ""
+               if command -v ip &>/dev/null; then ip route show
+               else route -n 2>/dev/null; fi ;;
+            a) prompt_input "URL to download"
+               local url="$INPUT"
+               prompt_input "Save as (filename, Enter for default)"
+               local fname="$INPUT"
+               if command -v wget &>/dev/null; then
+                   [[ -n "$fname" ]] && wget -O "$fname" "$url" || wget "$url"
+               elif command -v curl &>/dev/null; then
+                   [[ -n "$fname" ]] && curl -L -o "$fname" "$url" || curl -LO "$url"
+               else warn "Install wget or curl."; fi ;;
+            b) echo ""
+               if command -v curl &>/dev/null; then
+                   echo -e "  ${BOLD}Public IP:${NC} $(curl -s ifconfig.me 2>/dev/null || curl -s api.ipify.org)"
+               elif command -v wget &>/dev/null; then
+                   echo -e "  ${BOLD}Public IP:${NC} $(wget -qO- ifconfig.me)"
+               else warn "Install curl or wget."; fi ;;
+            0) return ;;
+            *) warn "Invalid choice." ;;
+        esac
+        pause
+    done
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU: HARDWARE INFO
+# ───────────────────────────────────────────────────────────────────────
+menu_hardware() {
+    while true; do
+        banner
+        draw_menu "💻  Hardware Information" \
+            "${G}1)${NC}  CPU info" \
+            "${C}2)${NC}  Memory (RAM) info" \
+            "${Y}3)${NC}  Disk drives & usage" \
+            "${B}4)${NC}  GPU info" \
+            "${M}5)${NC}  USB devices" \
+            "${W}6)${NC}  PCI devices" \
+            "${R}7)${NC}  Battery status" \
+            "${G}8)${NC}  Temperatures & fan sensors" \
+            "${C}9)${NC}  Full system summary (neofetch/inxi)" \
+            "${Y}a)${NC}  About this system (AENUX view)" \
+            "${GR}0)${NC}  Back"
+        prompt_choice
+
+        case "$CHOICE" in
+            1) echo ""; lscpu 2>/dev/null | awk '{print "  "$0}' ;;
+            2) echo ""
+               free -h | awk '{print "  "$0}'; echo ""
+               grep -E "^(MemTotal|MemFree|MemAvailable|SwapTotal|SwapFree)" /proc/meminfo | \
+                   awk '{printf "  %-20s %s\n", $1, $2" "$3}' ;;
+            3) echo ""
+               echo -e "  ${BOLD}── Disk Usage ──${NC}"
+               df -h --output=target,fstype,size,used,avail,pcent 2>/dev/null | \
+                   grep -Ev "^(tmpfs|devtmpfs|squashfs|efivarfs|cgroupfs|sysfs|proc|devpts|hugetlbfs|mqueue|debugfs|tracefs|securityfs|fusectl|binfmt_misc|configfs|none)" | \
+                   awk '{print "  "$0}'
+               echo ""
+               echo -e "  ${BOLD}── Block Devices ──${NC}"
+               lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MOUNTPOINT | awk '{print "  "$0}' ;;
+            4) echo ""
+               if command -v lspci &>/dev/null; then
+                   lspci | grep -iE "vga|3d|display|gpu" | awk '{print "  "$0}'
+               else warn "lspci not found. Install pciutils."; fi
+               if command -v nvidia-smi &>/dev/null; then echo ""; nvidia-smi; fi ;;
+            5) echo ""
+               if command -v lsusb &>/dev/null; then lsusb | awk '{print "  "$0}'
+               else warn "lsusb not found. Install usbutils."; fi ;;
+            6) echo ""
+               if command -v lspci &>/dev/null; then lspci | awk '{print "  "$0}'
+               else warn "lspci not found. Install pciutils."; fi ;;
+            7) echo ""
+               if ls /sys/class/power_supply/BAT* &>/dev/null; then
+                   for bat in /sys/class/power_supply/BAT*; do
+                       echo -e "  ${BOLD}$(basename $bat):${NC}"
+                       [[ -f "$bat/status" ]]   && echo -e "    Status:   $(cat $bat/status)"
+                       [[ -f "$bat/capacity" ]] && echo -e "    Capacity: $(cat $bat/capacity)%"
+                       [[ -f "$bat/technology" ]] && echo -e "    Type:     $(cat $bat/technology)"
+                   done
+               else warn "No battery detected."; fi ;;
+            8) echo ""
+               if command -v sensors &>/dev/null; then sensors
+               elif command -v acpi &>/dev/null; then acpi -t
+               elif [[ -d /sys/class/hwmon ]]; then
+                   for hwmon in /sys/class/hwmon/hwmon*; do
+                       local name; name=$(cat "$hwmon/name" 2>/dev/null || echo "hwmon")
+                       echo -e "  ${BOLD}$name${NC}"
+                       for temp in "$hwmon"/temp*_input; do
+                           [[ -f "$temp" ]] && printf "  %s: %s°C\n" "$(basename $temp)" "$(awk '{printf "%.1f", $1/1000}' $temp)"
+                       done
+                   done
+               else warn "Install lm-sensors: aenux install lm-sensors"; fi ;;
+            9) echo ""
+               if   command -v fastfetch   &>/dev/null; then fastfetch
+               elif command -v hyfetch     &>/dev/null; then hyfetch
+               elif command -v neofetch    &>/dev/null; then neofetch
+               elif command -v macchina    &>/dev/null; then macchina
+               elif command -v pfetch      &>/dev/null; then pfetch
+               elif command -v cpufetch    &>/dev/null; then cpufetch
+               elif command -v screenfetch &>/dev/null; then screenfetch
+               elif command -v inxi        &>/dev/null; then inxi -Fxz
+               else
+                   warn "No fetch tool found. Install one:"
+                   echo -e "  ${DIM}fastfetch / hyfetch / neofetch / macchina / pfetch / screenfetch / inxi${NC}"
+                   echo -e "  ${DIM}Example: aenux install fastfetch${NC}"
+               fi ;;
+            a) show_system_about ;;
+            0) return ;;
+            *) warn "Invalid choice." ;;
+        esac
+        pause
+    done
+}
+
+show_system_about() {
+    echo ""
+    echo -e "  ${C}${BOLD}── System Overview ──${NC}\n"
+    echo -e "  ${BOLD}OS:${NC}        $(get_distro_name)"
+    echo -e "  ${BOLD}Hostname:${NC}  $(hostname)"
+    echo -e "  ${BOLD}Kernel:${NC}    $(uname -r)"
+    echo -e "  ${BOLD}Arch:${NC}      $(uname -m)"
+    echo -e "  ${BOLD}Uptime:${NC}    $(uptime -p 2>/dev/null || uptime)"
+    echo -e "  ${BOLD}Shell:${NC}     $SHELL"
+    echo -e "  ${BOLD}CPU:${NC}       $(lscpu 2>/dev/null | grep "Model name" | cut -d: -f2 | xargs)"
+    echo -e "  ${BOLD}Cores:${NC}     $(nproc)"
+    echo -e "  ${BOLD}RAM:${NC}       $(free -h | awk '/Mem/{print $2 " total, " $7 " free"}')"
+    echo -e "  ${BOLD}Disks:${NC}"
+    df -h --output=target,fstype,size,used,avail,pcent 2>/dev/null | \
+        grep -Ev "^(tmpfs|devtmpfs|squashfs|efivarfs|cgroupfs|sysfs|proc|devpts|hugetlbfs|mqueue|debugfs|tracefs|securityfs|fusectl|binfmt_misc|configfs|none|Filesystem)" | \
+        awk '{printf "    %-25s %s used of %s (%s free)\n", $1, $4, $3, $5}'
+    echo -e "  ${BOLD}Pkg Mgr:${NC}   $(detect_pm)"
+    local secondary; secondary=$(detect_secondary_pms)
+    [[ -n "$secondary" ]] && echo -e "  ${BOLD}Also:${NC}      $secondary"
+    echo ""
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU: USER & GROUP MANAGEMENT
+# ───────────────────────────────────────────────────────────────────────
+menu_users() {
+    while true; do
+        banner
+        draw_menu "👤  User & Group Management" \
+            "${G}1)${NC}  List all users" \
+            "${C}2)${NC}  Add a new user" \
+            "${R}3)${NC}  Delete a user" \
+            "${Y}4)${NC}  Change user password" \
+            "${B}5)${NC}  Add user to group" \
+            "${M}6)${NC}  Remove user from group" \
+            "${W}7)${NC}  List all groups" \
+            "${G}8)${NC}  Create a group" \
+            "${R}9)${NC}  Delete a group" \
+            "${C}a)${NC}  Show current user info" \
+            "${GR}0)${NC}  Back"
+        prompt_choice
+
+        case "$CHOICE" in
+            1) echo ""
+               awk -F: '$3 >= 1000 && $1 != "nobody" {printf "  %-20s uid=%-6s home=%s\n", $1, $3, $6}' /etc/passwd | sort ;;
+            2) need_root
+               prompt_input "New username"; local uname="$INPUT"
+               confirm "Create user '$uname' with home directory?" || { pause; continue; }
+               useradd -m -s /bin/bash "$uname" && ok "User '$uname' created."
+               confirm "Set a password for '$uname' now?" && passwd "$uname"
+               hist "user-add: $uname" ;;
+            3) need_root
+               prompt_input "Username to delete"; local uname="$INPUT"
+               confirm "Delete user '$uname'? (home directory kept)" || { pause; continue; }
+               userdel "$uname" && ok "User '$uname' deleted." || fail "Failed."
+               hist "user-del: $uname" ;;
+            4) need_root; prompt_input "Username"; passwd "$INPUT" ;;
+            5) need_root
+               prompt_input "Username"; local u="$INPUT"
+               prompt_input "Group name"; local g="$INPUT"
+               usermod -aG "$g" "$u" && ok "Added '$u' to group '$g'." || fail "Failed."
+               hist "user-addgroup: $u → $g" ;;
+            6) need_root
+               prompt_input "Username"; local u="$INPUT"
+               prompt_input "Group to remove from"; local g="$INPUT"
+               gpasswd -d "$u" "$g" && ok "Removed '$u' from '$g'." || fail "Failed." ;;
+            7) echo ""
+               awk -F: '{printf "  %-20s gid=%-6s members=%s\n", $1, $3, $4}' /etc/group | sort ;;
+            8) need_root; prompt_input "New group name"
+               groupadd "$INPUT" && ok "Group '$INPUT' created." || fail "Failed."
+               hist "group-add: $INPUT" ;;
+            9) need_root
+               prompt_input "Group name to delete"
+               confirm "Delete group '$INPUT'?" || { pause; continue; }
+               groupdel "$INPUT" && ok "Group '$INPUT' deleted." || fail "Failed."
+               hist "group-del: $INPUT" ;;
+            a) echo ""; id; echo ""; groups ;;
+            0) return ;;
+            *) warn "Invalid choice." ;;
+        esac
+        pause
+    done
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU: BACKUP & RESTORE
+# ───────────────────────────────────────────────────────────────────────
+menu_backup() {
+    while true; do
+        banner
+        draw_menu "💾  Backup & Restore" \
+            "${G}1)${NC}  Backup package list" \
+            "${Y}2)${NC}  Restore packages from list" \
+            "${C}3)${NC}  Backup a directory (tar.gz)" \
+            "${B}4)${NC}  Quick home folder backup" \
+            "${M}5)${NC}  View saved backups" \
+            "${R}6)${NC}  Delete old backups" \
+            "${GR}0)${NC}  Back"
+        prompt_choice
+
+        case "$CHOICE" in
+            1) backup_state; ok "Package list saved to $BACKUP_DIR" ;;
+            2) restore_packages ;;
+            3) prompt_input "Directory to backup (full path)"
+               local src="$INPUT"
+               [[ ! -d "$src" ]] && { fail "Directory not found."; pause; continue; }
+               local dest="$BACKUP_DIR/dir-$(date +%Y%m%d-%H%M%S).tar.gz"
+               run_spin "Backing up $src..." tar czf "$dest" "$src" 2>/dev/null
+               ok "Saved to: $dest"; hist "backup-dir: $src" ;;
+            4) local dest="$BACKUP_DIR/home-$(date +%Y%m%d-%H%M%S).tar.gz"
+               confirm "Backup $HOME (excluding .cache and Trash)?" || { pause; continue; }
+               run_spin "Backing up home..." tar czf "$dest" \
+                   --exclude="$HOME/.cache" --exclude="$HOME/.local/share/Trash" "$HOME" 2>/dev/null
+               ok "Home backed up to: $dest"; hist "backup-home" ;;
+            5) echo ""
+               ls -lh "$BACKUP_DIR" 2>/dev/null | awk '{print "  "$0}' || info "No backups found." ;;
+            6) confirm "Delete ALL backups in $BACKUP_DIR?" || { pause; continue; }
+               rm -rf "${BACKUP_DIR:?}"/* && ok "Backups cleared." || fail "Failed." ;;
+            0) return ;;
+            *) warn "Invalid choice." ;;
+        esac
+        pause
+    done
+}
+
+backup_state() {
+    local pm; pm=$(detect_pm)
+    local ts; ts=$(date +%Y%m%d-%H%M%S)
+    local file="$BACKUP_DIR/pkglist-$ts.txt"
+    case "$pm" in
+        apt-get)      dpkg --get-selections > "$file" ;;
+        dnf|yum)      rpm -qa > "$file" ;;
+        pacman)       pacman -Qqe > "$file" ;;
+        apk)          apk list --installed 2>/dev/null > "$file" ;;
+        xbps-install) xbps-query -l > "$file" ;;
+        nix-env)      nix-env -q > "$file" ;;
+        *)            warn "Package list backup not supported for $pm"; return ;;
+    esac
+    ok "Package list saved: $file"
+    log INFO "Package list backup: pkglist-$ts.txt"
+}
+
+restore_packages() {
+    info "Available package lists in $BACKUP_DIR:"
+    ls "$BACKUP_DIR"/pkglist-*.txt 2>/dev/null | awk '{print "  "$0}' || { warn "No package lists found."; return; }
+    prompt_input "Full path to package list file"
+    local file="$INPUT"
+    [[ ! -f "$file" ]] && { fail "File not found: $file"; return; }
+    need_root
+    local pm; pm=$(detect_pm)
+    confirm "Reinstall all packages from $file?" || return
+    case "$pm" in
+        apt-get) dpkg --set-selections < "$file" && apt-get dselect-upgrade -y ;;
+        pacman)  sudo pacman -S --needed --noconfirm $(cat "$file") ;;
+        *)       warn "Auto-restore not supported for $pm. Use the list manually." ;;
+    esac
+    ok "Restore completed."; hist "restore-packages: $file"
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU: SYSTEM HEALTH
+# ───────────────────────────────────────────────────────────────────────
+menu_health() {
+    banner
+    echo -e "  ${C}${BOLD}System Health Report${NC}  ${DIM}$(date '+%Y-%m-%d %H:%M:%S')${NC}\n"
+
+    # Uptime & Load
+    echo -e "  ${BOLD}Uptime:${NC}   $(uptime -p 2>/dev/null || uptime)"
+    local load; load=$(awk '{print "1m="$1"  5m="$2"  15m="$3}' /proc/loadavg)
+    echo -e "  ${BOLD}Load:${NC}     $load\n"
+
+    # Memory bar
+    echo -e "  ${BOLD}Memory:${NC}"
+    free -h | awk 'NR<=2{printf "  %-10s %s\n", $1, $0}'; echo ""
+
+    # Disk (color-coded, real mounts only)
+    echo -e "  ${BOLD}Disk Usage:${NC}"
+    df -h --output=target,fstype,size,used,avail,pcent 2>/dev/null | \
+        grep -Ev "^(tmpfs|devtmpfs|squashfs|efivarfs|cgroupfs|sysfs|proc|devpts|hugetlbfs|mqueue|debugfs|tracefs|securityfs|fusectl|binfmt_misc|configfs|none|Filesystem)" | \
+        while IFS= read -r line; do
+            local pct; pct=$(echo "$line" | awk '{gsub(/%/,"",$6); print $6+0}')
+            if   [[ $pct -ge 90 ]]; then echo -e "  ${R}$line${NC}"
+            elif [[ $pct -ge 70 ]]; then echo -e "  ${Y}$line${NC}"
+            else echo "  $line"; fi
+        done; echo ""
+
+    # Updates
+    echo -e "  ${BOLD}Pending Updates:${NC}"
+    local count; count=$(pm_run check 2>/dev/null | tr -d '[:space:]')
+    [[ "$count" == "0" ]] && echo -e "  ${OK}  Up to date" || echo -e "  ${WARN}  ${Y}$count package(s) available${NC}"
+    echo ""
+
+    # Failed services
+    if command -v systemctl &>/dev/null; then
+        echo -e "  ${BOLD}Failed Services:${NC}"
+        local fails; fails=$(systemctl --failed --no-pager --no-legend 2>/dev/null)
+        [[ -z "$fails" ]] && echo -e "  ${OK}  None" || echo "$fails" | awk '{print "  "$0}'
+        echo ""
+    fi
+
+    # Top 5 CPU consumers
+    echo -e "  ${BOLD}Top Processes by CPU:${NC}"
+    ps aux --sort=-%cpu 2>/dev/null | awk 'NR>=2 && NR<=7 {printf "  %-20s %5s%%  %5sMB\n", $11, $3, int($6/1024)}'
+    echo ""
+
+    # Top 5 memory consumers
+    echo -e "  ${BOLD}Top Processes by Memory:${NC}"
+    ps aux --sort=-%mem 2>/dev/null | awk 'NR>=2 && NR<=7 {printf "  %-20s %5s%%  %5sMB\n", $11, $4, int($6/1024)}'
+    echo ""
+
+    hist "health-check"
+    pause
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU: SHELL & ENVIRONMENT
+# ───────────────────────────────────────────────────────────────────────
+menu_shell() {
+    while true; do
+        banner
+        draw_menu "🐚  Shell & Environment" \
+            "${G}1)${NC}  Change default shell" \
+            "${C}2)${NC}  Edit ~/.bashrc" \
+            "${B}3)${NC}  Edit ~/.bash_aliases" \
+            "${Y}4)${NC}  Reload shell config (source)" \
+            "${M}5)${NC}  Show environment variables" \
+            "${W}6)${NC}  Add entry to PATH" \
+            "${R}7)${NC}  Install Oh-My-Zsh" \
+            "${G}8)${NC}  Set system hostname" \
+            "${C}9)${NC}  Set timezone" \
+            "${B}a)${NC}  Show all aliases" \
+            "${GR}0)${NC}  Back"
+        prompt_choice
+
+        case "$CHOICE" in
+            1) echo -e "\n  ${BOLD}Available shells:${NC}"; cat /etc/shells | awk '{print "  "$0}'
+               prompt_input "New shell path (e.g. /bin/zsh)"
+               chsh -s "$INPUT" && ok "Default shell set to $INPUT." || fail "Failed." ;;
+            2) ${DEFAULT_EDITOR:-nano} ~/.bashrc ;;
+            3) touch ~/.bash_aliases; ${DEFAULT_EDITOR:-nano} ~/.bash_aliases ;;
+            4) source ~/.bashrc 2>/dev/null && ok "Reloaded ~/.bashrc." || \
+               warn "Run 'source ~/.bashrc' in your terminal to fully apply." ;;
+            5) echo ""; printenv | sort | awk '{print "  "$0}' | less ;;
+            6) prompt_input "Directory to add to PATH"
+               grep -q "PATH.*$INPUT" ~/.bashrc 2>/dev/null && \
+                   { warn "Already in PATH."; pause; continue; }
+               echo "export PATH=\"\$PATH:$INPUT\"" >> ~/.bashrc
+               ok "Added to PATH in ~/.bashrc. Reload shell to apply." ;;
+            7) if ! command -v zsh &>/dev/null; then
+                   warn "zsh not found. Install it first: aenux install zsh"
+               elif [[ -d "$HOME/.oh-my-zsh" ]]; then
+                   warn "Oh-My-Zsh is already installed at ~/.oh-my-zsh"
+               else
+                   sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" \
+                       && ok "Oh-My-Zsh installed." || fail "Installation failed."
+               fi ;;
+            8) need_root; prompt_input "New hostname"
+               if command -v hostnamectl &>/dev/null; then
+                   hostnamectl set-hostname "$INPUT"
+               else
+                   echo "$INPUT" > /etc/hostname && hostname "$INPUT"
+               fi
+               ok "Hostname set to: $INPUT"; hist "set-hostname: $INPUT" ;;
+            9) need_root
+               if command -v timedatectl &>/dev/null; then
+                   echo ""; timedatectl list-timezones | grep -i "$(locale | grep LANG | cut -d= -f2 | cut -d_ -f1 | tr '[:upper:]' '[:lower:]')" | head -20
+                   prompt_input "Timezone (e.g. America/New_York)"
+                   timedatectl set-timezone "$INPUT" && ok "Timezone set to $INPUT."
+               else
+                   warn "timedatectl not available. Symlink manually:"
+                   info "ln -sf /usr/share/zoneinfo/REGION/CITY /etc/localtime"
+               fi
+               hist "set-timezone: $INPUT" ;;
+            a) echo ""; alias | awk '{print "  "$0}' ;;
+            0) return ;;
+            *) warn "Invalid choice." ;;
+        esac
+        pause
+    done
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU: SECURITY
+# ───────────────────────────────────────────────────────────────────────
+menu_security() {
+    while true; do
+        banner
+        draw_menu "🛡️   Security Tools" \
+            "${G}1)${NC}  Show listening ports" \
+            "${Y}2)${NC}  Login history" \
+            "${C}3)${NC}  Current sudo privileges" \
+            "${B}4)${NC}  Find SUID/SGID files" \
+            "${M}5)${NC}  UFW firewall status & control" \
+            "${W}6)${NC}  Fail2ban status" \
+            "${R}7)${NC}  Rootkit scan (rkhunter)" \
+            "${G}8)${NC}  Audit SSH config" \
+            "${C}9)${NC}  Check for world-writable files" \
+            "${Y}a)${NC}  List users with sudo access" \
+            "${GR}0)${NC}  Back"
+        prompt_choice
+
+        case "$CHOICE" in
+            1) echo ""
+               if command -v ss &>/dev/null; then ss -tulnp
+               else netstat -tulnp 2>/dev/null; fi ;;
+            2) echo ""; last | head -30 | awk '{print "  "$0}' ;;
+            3) echo ""
+               [[ $EUID -eq 0 ]] && cat /etc/sudoers || sudo -l ;;
+            4) echo ""
+               info "Scanning for SUID/SGID files..."
+               find / -xdev -type f \( -perm -4000 -o -perm -2000 \) 2>/dev/null | sort | awk '{print "  "$0}' ;;
+            5) if ! command -v ufw &>/dev/null; then
+                   warn "UFW not installed. Install: aenux install ufw"; pause; continue
+               fi
+               need_root; echo ""; ufw status verbose; echo ""
+               echo -e "  ${G}1)${NC} Enable  ${R}2)${NC} Disable  ${C}3)${NC} Allow port  ${B}4)${NC} Deny port  ${GR}5)${NC} Back"
+               prompt_choice
+               case "$CHOICE" in
+                   1) ufw enable && ok "UFW enabled." ;;
+                   2) ufw disable && ok "UFW disabled." ;;
+                   3) prompt_input "Port to allow (e.g. 22)"; ufw allow "$INPUT" && ok "Allowed port $INPUT." ;;
+                   4) prompt_input "Port to deny"; ufw deny "$INPUT" && ok "Denied port $INPUT." ;;
+               esac ;;
+            6) if command -v fail2ban-client &>/dev/null; then
+                   echo ""; fail2ban-client status | awk '{print "  "$0}'
+               else warn "fail2ban not installed. Install: aenux install fail2ban"; fi ;;
+            7) if ! command -v rkhunter &>/dev/null; then
+                   warn "rkhunter not installed. Install: aenux install rkhunter"; pause; continue
+               fi
+               need_root
+               run_spin "Updating rkhunter database..." rkhunter --update
+               echo ""; rkhunter --check --sk ;;
+            8) echo ""
+               if [[ -f /etc/ssh/sshd_config ]]; then
+                   echo -e "  ${BOLD}Active SSHD settings:${NC}\n"
+                   grep -Ev "^#|^$" /etc/ssh/sshd_config | awk '{print "  "$0}' | sort
+                   echo ""
+                   local root_login; root_login=$(grep "^PermitRootLogin" /etc/ssh/sshd_config | awk '{print $2}')
+                   local pw_auth; pw_auth=$(grep "^PasswordAuthentication" /etc/ssh/sshd_config | awk '{print $2}')
+                   [[ "$root_login" == "yes" ]] && warn "PermitRootLogin is enabled — consider disabling."
+                   [[ "$pw_auth" == "yes" ]] && warn "PasswordAuthentication is enabled — consider using keys only."
+                   [[ "$root_login" != "yes" ]] && [[ "$pw_auth" != "yes" ]] && ok "SSH config looks secure."
+               else warn "No sshd_config found."; fi ;;
+            9) echo ""
+               info "Searching for world-writable files (excluding /proc, /sys)..."
+               find / -xdev -type f -perm -0002 \
+                   ! -path "/proc/*" ! -path "/sys/*" 2>/dev/null | head -30 | awk '{print "  "$0}' ;;
+            a) echo ""
+               echo -e "  ${BOLD}Users with sudo access:${NC}"
+               grep -E "^sudo|^wheel|^admin" /etc/group | awk -F: '{print "  Group: "$1" → Members: "$4}' ;;
+            0) return ;;
+            *) warn "Invalid choice." ;;
+        esac
+        pause
+    done
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU: LOGS & HISTORY
+# ───────────────────────────────────────────────────────────────────────
+menu_logs() {
+    while true; do
+        banner
+        draw_menu "📋  Logs & History" \
+            "${G}1)${NC}  AENUX action history" \
+            "${C}2)${NC}  AENUX log (filtered view)" \
+            "${Y}3)${NC}  System log (journalctl / syslog)" \
+            "${B}4)${NC}  Kernel messages (dmesg)" \
+            "${M}5)${NC}  Auth log (login attempts)" \
+            "${W}6)${NC}  Boot log" \
+            "${R}7)${NC}  Clear AENUX history" \
+            "${GR}8)${NC}  Clear AENUX log" \
+            "${GR}0)${NC}  Back"
+        prompt_choice
+
+        case "$CHOICE" in
+            1) echo ""
+               if [[ -f "$HISTORY_FILE" ]]; then
+                   echo -e "  ${BOLD}AENUX Command History:${NC}\n"
+                   awk '{print "  "$0}' "$HISTORY_FILE" | tail -50
+               else info "No history yet."; fi ;;
+            2) echo ""
+               echo -e "  ${BOLD}Filter by level:${NC}  ${G}1)${NC} ALL  ${Y}2)${NC} WARN  ${R}3)${NC} ERROR"
+               prompt_choice
+               local filter
+               case "$CHOICE" in
+                   2) filter="WARN" ;; 3) filter="ERROR" ;; *) filter="" ;;
+               esac
+               if [[ -f "$LOGFILE" ]]; then
+                   if [[ -n "$filter" ]]; then
+                       grep "\[$filter\]" "$LOGFILE" | awk '{print "  "$0}' | tail -60
+                   else
+                       awk '{print "  "$0}' "$LOGFILE" | tail -60
+                   fi
+               else info "Log is empty."; fi ;;
+            3) echo ""
+               if command -v journalctl &>/dev/null; then
+                   journalctl --no-pager -n 50 | awk '{print "  "$0}'
+               elif [[ -f /var/log/syslog ]]; then
+                   tail -50 /var/log/syslog | awk '{print "  "$0}'
+               elif [[ -f /var/log/messages ]]; then
+                   tail -50 /var/log/messages | awk '{print "  "$0}'
+               else warn "No system log found."; fi ;;
+            4) echo ""; dmesg | tail -40 | awk '{print "  "$0}' ;;
+            5) echo ""
+               if [[ -f /var/log/auth.log ]]; then
+                   tail -40 /var/log/auth.log | awk '{print "  "$0}'
+               elif [[ -f /var/log/secure ]]; then
+                   tail -40 /var/log/secure | awk '{print "  "$0}'
+               elif command -v journalctl &>/dev/null; then
+                   journalctl -u ssh -u sshd -u sudo --no-pager -n 40 | awk '{print "  "$0}'
+               else warn "No auth log found."; fi ;;
+            6) echo ""
+               if command -v journalctl &>/dev/null; then
+                   journalctl -b --no-pager -n 50 | awk '{print "  "$0}'
+               elif [[ -f /var/log/boot.log ]]; then
+                   tail -50 /var/log/boot.log | awk '{print "  "$0}'
+               else warn "No boot log found."; fi ;;
+            7) confirm "Clear AENUX action history?" && > "$HISTORY_FILE" && ok "History cleared." ;;
+            8) confirm "Clear AENUX log?" && > "$LOGFILE" && ok "Log cleared." ;;
+            0) return ;;
+            *) warn "Invalid choice." ;;
+        esac
+        pause
+    done
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU: SETTINGS
+# ───────────────────────────────────────────────────────────────────────
+menu_settings() {
+    while true; do
+        reload_config
+        banner
+        draw_menu "⚙️   AENUX Settings" \
+            "${Y}1)${NC}  Backup before upgrade:    ${W}${BACKUP_BEFORE_UPGRADE:-true}${NC}" \
+            "${Y}2)${NC}  Auto clean after upgrade: ${W}${AUTO_CLEAN:-true}${NC}" \
+            "${Y}3)${NC}  Show tips:                ${W}${SHOW_TIPS:-true}${NC}" \
+            "${Y}4)${NC}  Dry-run mode:             ${W}${DRY_RUN:-false}${NC}" \
+            "${C}5)${NC}  Default editor:           ${W}${DEFAULT_EDITOR:-nano}${NC}" \
+            "${C}6)${NC}  Color theme:              ${W}${DEFAULT_THEME:-default}${NC}" \
+            "${C}7)${NC}  Backup location:          ${W}${BACKUP_LOCATION:-~/.aenux-backups}${NC}" \
+            "${B}8)${NC}  Edit config file directly" \
+            "${B}9)${NC}  Re-run first-time setup wizard" \
+            "${R}a)${NC}  Update AENUX to latest version" \
+            "${GR}0)${NC}  Back"
+        prompt_choice
+
+        case "$CHOICE" in
+            1) toggle_cfg "BACKUP_BEFORE_UPGRADE" ;;
+            2) toggle_cfg "AUTO_CLEAN" ;;
+            3) toggle_cfg "SHOW_TIPS" ;;
+            4) toggle_cfg "DRY_RUN" ;;
+            5) echo -e "\n  ${GR}1) code  2) nano  3) vim  4) nvim  5) vi  6) micro  7) other${NC}"
+               prompt_choice
+               local ed
+               case "$CHOICE" in
+                   1) ed="code" ;; 2) ed="nano" ;; 3) ed="vim" ;; 4) ed="nvim" ;; 5) ed="vi" ;; 6) ed="micro" ;;
+                   7) prompt_input "Editor name"; ed="$INPUT" ;;
+                   *) ed="$DEFAULT_EDITOR" ;;
+               esac
+               set_cfg "DEFAULT_EDITOR" "$ed"; ok "Editor set to $ed" ;;
+            6) echo -e "\n  ${GR}1) default  2) green  3) magenta  4) none${NC}"
+               prompt_choice
+               local th
+               case "$CHOICE" in
+                   1) th="default" ;; 2) th="green" ;; 3) th="magenta" ;; 4) th="none" ;; *) th="default" ;;
+               esac
+               set_cfg "DEFAULT_THEME" "$th"; ok "Theme set to $th" ;;
+            7) prompt_input "New backup directory path"
+               mkdir -p "$INPUT" && set_cfg "BACKUP_LOCATION" "$INPUT" && ok "Backup dir set to $INPUT." || fail "Could not create directory." ;;
+            8) ${DEFAULT_EDITOR:-nano} "$CONFIG_FILE"; reload_config ;;
+            9) first_run_wizard ;;
+            a) update_aenux ;;
+            0) return ;;
+            *) warn "Invalid choice." ;;
+        esac
+        pause
+    done
+}
+
+toggle_cfg() {
+    local key="$1"
+    reload_config
+    local current; current=$(grep "^${key}=" "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    local new_val; [[ "$current" == "true" ]] && new_val="false" || new_val="true"
+    set_cfg "$key" "$new_val"
+    ok "${key} → ${new_val}"
+}
+
+set_cfg() {
+    local key="$1" val="$2"
+    if grep -q "^${key}=" "$CONFIG_FILE" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=${val}|" "$CONFIG_FILE"
+    else
+        echo "${key}=${val}" >> "$CONFIG_FILE"
+    fi
+    reload_config
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MENU: GLOBAL SEARCH
+# ───────────────────────────────────────────────────────────────────────
+menu_search() {
+    banner
+    echo -e "  ${BOLD}Search across all AENUX menus:${NC}\n"
+    prompt_input "Keyword to search"
+    local q="${INPUT,,}"
+    echo ""
+
+    declare -A SEARCH_MAP=(
+        ["install"]="Packages › 1) Install package"
+        ["remove|uninstall"]="Packages › 2) Remove package"
+        ["update|refresh"]="Packages › 3) Update package lists"
+        ["upgrade"]="Packages › 4) Upgrade all | Maintenance › 2) Auto-upgrade"
+        ["search|find package"]="Packages › 5) Search package"
+        ["fix|broken|repair"]="Packages › 8) Fix broken | Maintenance › 4) Repair filesystem"
+        ["snap"]="Universal PMs › 1-5) Snap tools"
+        ["flatpak"]="Universal PMs › 6-b) Flatpak tools"
+        ["clean|cache|temp|junk"]="Maintenance › 1) Deep clean"
+        ["kernel|initramfs"]="Maintenance › 5) Rebuild initramfs | 7) Purge old kernels"
+        ["schedule|cron|timer|auto"]="Maintenance › 8-9) Schedule auto-upgrade/clean"
+        ["dry.run|preview"]="Maintenance › a) Dry-run preview | Packages › e) Dry-run"
+        ["process|kill|cpu|memory|ram"]="Processes › 1-9)"
+        ["disk|drive|format|mount|large file"]="Disk Tools › 1-9)"
+        ["service|systemd|start|stop|restart"]="Services › 1-9)"
+        ["network|ip|ping|dns|port|internet"]="Network › 1-b)"
+        ["hardware|cpu|gpu|ram|battery|sensor"]="Hardware › 1-a)"
+        ["user|group|password|account"]="Users › 1-a)"
+        ["backup|restore"]="Backup › 1-6)"
+        ["health|status|uptime|load"]="Health Report [8]"
+        ["shell|bash|zsh|alias|path|hostname|timezone"]="Shell & Env › 1-a)"
+        ["security|firewall|ufw|ssh|suid|rootkit"]="Security › 1-a)"
+        ["log|history|journal|dmesg|auth|boot"]="Logs & History [L]"
+        ["setting|config|theme|editor|wizard"]="Settings [C]"
+    )
+
+    local found=0
+    for pattern in "${!SEARCH_MAP[@]}"; do
+        if echo "$q" | grep -qE "$pattern"; then
+            echo -e "  ${OK}  ${G}${SEARCH_MAP[$pattern]}${NC}"
+            found=1
+        fi
+    done
+
+    [[ $found -eq 0 ]] && echo -e "  ${WARN}  No results found for '${INPUT}'."
+    pause
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# SELF-UPDATE
+# ───────────────────────────────────────────────────────────────────────
+update_aenux() {
+    info "Checking for AENUX updates..."
+    if ! command -v curl &>/dev/null && ! command -v wget &>/dev/null; then
+        warn "curl or wget is required to update AENUX."
+        return
+    fi
+
+    local tmp="/tmp/aenux_update"
+
+    if command -v curl &>/dev/null; then
+        curl -fsSL "$AENUX_REMOTE" -o "$tmp" 2>/dev/null
+    else
+        wget -qO "$tmp" "$AENUX_REMOTE" 2>/dev/null
+    fi
+
+    if [[ ! -s "$tmp" ]]; then
+        warn "Could not fetch update (no internet or remote URL not configured)."
+        info "To self-host updates, set AENUX_REMOTE in $CONFIG_FILE"
+        rm -f "$tmp"
+        return
+    fi
+
+    local remote_ver; remote_ver=$(grep "^VERSION=" "$tmp" | cut -d'"' -f2)
+
+    if [[ "$remote_ver" == "$VERSION" ]]; then
+        ok "Already on the latest version (v${VERSION})."
+    elif [[ -n "$remote_ver" ]]; then
+        info "New version available: v${remote_ver} (current: v${VERSION})"
+        confirm "Update AENUX to v${remote_ver}?" || { rm -f "$tmp"; return; }
+        chmod +x "$tmp"
+        cp "$tmp" "$SCRIPT_PATH"
+        ok "AENUX updated to v${remote_ver}. Restart to apply."
+        hist "self-update: v$VERSION → v$remote_ver"
+    fi
+    rm -f "$tmp"
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# MAIN MENU
+# ───────────────────────────────────────────────────────────────────────
+main_menu() {
+    while true; do
+        banner
+
+        # Tip of the session
+        if [[ "${SHOW_TIPS:-true}" == "true" ]]; then
+            local tips=(
+                "Use '/' to search all menus by keyword."
+                "Dry-run mode lets you preview upgrades without applying them."
+                "Schedule auto-upgrades from Maintenance › 8."
+                "AENUX supports apt, dnf, pacman, apk, xbps, nix, emerge & more."
+                "Use Logs & History to review everything AENUX has done."
+                "Settings › Re-run wizard to reconfigure AENUX any time."
+            )
+            local tip="${tips[$((RANDOM % ${#tips[@]}))]}"
+            echo -e "  ${DIM}Tip: $tip${NC}\n"
+        fi
+
+        echo -e "  ${BOLD}Select a category:${NC}\n"
+        echo -e "  ${G}${BOLD} [1] ${NC} 📦   Package Manager"
+        echo -e "  ${C}${BOLD} [2] ${NC} 🌍   Universal PMs (Snap & Flatpak)"
+        echo -e "  ${Y}${BOLD} [3] ${NC} 🔧   System Maintenance"
+        echo -e "  ${B}${BOLD} [4] ${NC} ⚡   Process Manager"
+        echo -e "  ${M}${BOLD} [5] ${NC} 💿   Disk & File Tools"
+        echo -e "  ${C}${BOLD} [6] ${NC} ⚙️    Service Manager"
+        echo -e "  ${G}${BOLD} [7] ${NC} 🌐   Network Tools"
+        echo -e "  ${Y}${BOLD} [8] ${NC} 💻   Hardware Info"
+        echo -e "  ${B}${BOLD} [9] ${NC} 👤   User & Group Management"
+        echo -e "  ${M}${BOLD} [0] ${NC} 💾   Backup & Restore"
+        echo ""
+        echo -e "  ${W}${BOLD} [h] ${NC} ❤️    System Health Report"
+        echo -e "  ${G}${BOLD} [s] ${NC} 🛡️    Security Tools"
+        echo -e "  ${C}${BOLD} [e] ${NC} 🐚   Shell & Environment"
+        echo -e "  ${Y}${BOLD} [l] ${NC} 📋   Logs & History"
+        echo -e "  ${B}${BOLD} [c] ${NC} ⚙️    Settings"
+        echo -e "  ${GR}${BOLD} [/] ${NC} 🔍   Search menus"
+        echo ""
+        echo -e "  ${GR} [q]  Quit${NC}"
+        echo -e "  ${GR}─────────────────────────────────────────────${NC}"
+        prompt_choice
+
+        case "${CHOICE,,}" in
+            1) menu_packages ;;
+            2) menu_universal_pm ;;
+            3) menu_maintenance ;;
+            4) menu_processes ;;
+            5) menu_disk ;;
+            6) menu_services ;;
+            7) menu_network ;;
+            8) menu_hardware ;;
+            9) menu_users ;;
+            0) menu_backup ;;
+            h) menu_health ;;
+            s) menu_security ;;
+            e) menu_shell ;;
+            l) menu_logs ;;
+            c) menu_settings ;;
+            /) menu_search ;;
+            q) clear; echo -e "\n  ${C}Thanks for using AENUX. Goodbye.${NC}\n"; exit 0 ;;
+            *) warn "Invalid choice." ;;
+        esac
+    done
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# CLI MODE (non-interactive / scripting)
+# ───────────────────────────────────────────────────────────────────────
+cli_mode() {
+    local cmd=$1; shift
+    case "$cmd" in
+        install|i)    need_root; pm_run install "$@"; ok "Done." ;;
+        remove|rm)    need_root; pm_run remove "$@"; ok "Done." ;;
+        update|up)    need_root; pm_run update; ok "Done." ;;
+        upgrade|ug)   need_root; do_auto_upgrade ;;
+        clean|c)      need_root; do_deep_clean ;;
+        search|s)     pm_run search "$@" ;;
+        list|ls)      pm_run list ;;
+        info)         pm_run info "$@" ;;
+        fix|f)        need_root; pm_run fix ;;
+        optimize|opt) need_root; do_optimize ;;
+        backup|bak)   backup_state ;;
+        health|h)     menu_health ;;
+        service|svc)  need_root; svc_action "$1" "$2" ;;
+        update-self)  update_aenux ;;
+        version|-v|--version) echo "AENUX v$VERSION" ;;
+        help|--help|-h) show_cli_help ;;
+        *)
+            fail "Unknown command: $cmd"
+            echo -e "  Run ${C}aenux help${NC} or just ${C}aenux${NC} for the interactive menu."
+            exit 1 ;;
+    esac
+}
+
+show_cli_help() {
+    echo -e "${C}${BOLD}"
+    echo "  AENUX v$VERSION — The Ultimate Linux Multi-Tool"
+    echo -e "${NC}"
+    echo -e "  ${BOLD}Interactive:${NC}  aenux"
+    echo -e "  ${BOLD}CLI mode:${NC}     aenux <command> [args]\n"
+    echo -e "  ${BOLD}Commands:${NC}"
+    echo -e "    ${G}install${NC} <pkg>     Install package(s)"
+    echo -e "    ${R}remove${NC} <pkg>      Remove package(s)"
+    echo -e "    ${Y}update${NC}            Update package lists"
+    echo -e "    ${C}upgrade${NC}           Smart auto-upgrade"
+    echo -e "    ${B}search${NC} <q>        Search packages"
+    echo -e "    ${M}list${NC}              List installed packages"
+    echo -e "    ${W}info${NC} <pkg>        Package info"
+    echo -e "    ${G}clean${NC}             Deep clean system"
+    echo -e "    ${C}optimize${NC}          Optimize performance"
+    echo -e "    ${Y}fix${NC}               Fix broken packages"
+    echo -e "    ${B}backup${NC}            Backup package list"
+    echo -e "    ${M}health${NC}            System health report"
+    echo -e "    ${W}service${NC} <a> <n>   Service action"
+    echo -e "    ${G}update-self${NC}       Update AENUX itself"
+    echo -e "    ${GR}version${NC}           Show version"
+    echo -e "    ${GR}help${NC}              This help\n"
+    echo -e "  ${BOLD}Supported package managers:${NC}"
+    echo -e "    apt · dnf · yum · zypper · pacman · apk · xbps · nix · emerge · slackpkg · swupd\n"
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# ENTRY POINT
+# ───────────────────────────────────────────────────────────────────────
+init
+
+if [[ $# -eq 0 ]]; then
+    main_menu
+else
+    cli_mode "$@"
+fi
