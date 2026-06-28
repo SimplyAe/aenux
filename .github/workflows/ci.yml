@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bash syntax check
+        run: bash -n aenux
+
+      - name: Install bats
+        run: sudo apt-get update -qq && sudo apt-get install -y bats
+
+      - name: Run unit tests
+        run: bats tests/
+
+      # ShellCheck is advisory for now (the interactive script has many stylistic
+      # findings); it reports issues without failing the build.
+      - name: ShellCheck (advisory)
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y shellcheck
+          shellcheck -S warning aenux

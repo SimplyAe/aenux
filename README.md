@@ -234,10 +234,19 @@ You can re-run the wizard any time from Settings.
 ## 📋 Requirements
 
 - **Bash 4.0+** (pre-installed on all modern Linux distros)
-- **Root access** (via `sudo`) for system operations
+- **Root access** for system operations — if you launch AENUX without it, the script
+  offers to **restart itself with `sudo`** and prompts for your password automatically.
+  Your own user is remembered, so config, backups and dotfile edits stay in *your* home
+  (not `/root`).
 - **Optional:** Various tools are used when available (lsusb, lspci, sensors, smartctl, etc.)
 
 **No dependencies to install** — it's pure bash and works out of the box.
+
+### 🔒 Safety first
+
+- Every action that changes your system asks for confirmation first (`[y/N]`).
+- Press Enter on any prompt (or pick `0`) to cancel and go **Back** to the previous menu.
+- Destructive operations (format, delete, purge) require an explicit, clearly-worded confirm.
 
 ---
 

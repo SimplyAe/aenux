@@ -19,3 +19,6 @@ test/
 # Temp files
 tmp/
 *.tmp
+
+# AENUX self-update backups
+*.bak-v*
